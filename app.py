@@ -2,11 +2,37 @@ import streamlit as st
 import pandas as pd
 from datetime import date
 from io import BytesIO
+import smtplib
+from email.mime.multipart import MIMEMultipart
+from email.mime.base import MIMEBase
+from email import encoders
 
 # --- CONFIGURACIÓN ---
 st.set_page_config(page_title="Seguimiento de Presupuesto", layout="centered")
 st.title("💰 Seguimiento de Presupuesto y Albaranes")
-st.write("Introduzca los datos del albarán para el control de gastos.")
+
+# Función para enviar email (usa los mismos Secrets que ya configuraste)
+def enviar_correo(archivo_excel):
+    try:
+        msg = MIMEMultipart()
+        msg['From'] = st.secrets["email_usuario"]
+        msg['To'] = st.secrets["email_profesora"]
+        msg['Subject'] = f"Informe de Presupuesto - {date.today()}"
+        
+        part = MIMEBase('application', 'octet-stream')
+        part.set_payload(archivo_excel)
+        encoders.encode_base64(part)
+        part.add_header('Content-Disposition', f"attachment; filename=presupuesto_{date.today()}.xlsx")
+        msg.attach(part)
+        
+        server = smtplib.SMTP('smtp.gmail.com', 587)
+        server.starttls()
+        server.login(st.secrets["email_usuario"], st.secrets["email_contrasena"])
+        server.send_message(msg)
+        server.quit()
+        return True
+    except:
+        return False
 
 # --- MEMORIA DE DATOS ---
 if 'datos_presupuesto' not in st.session_state:
@@ -19,60 +45,39 @@ with st.form("form_presupuesto"):
         n_albaran = st.text_input("Número de Albarán:")
         fecha = st.date_input("Fecha:", date.today())
         trabajador = st.text_input("Trabajador:")
-    
     with col_b:
-        # Aquí puedes cambiar las partidas según lo que necesites
-        partida = st.selectbox("Partida del presupuesto:", [
-            "Material Eléctrico", 
-            "Mano de Obra Exterior", 
-            "Maquinaria", 
-            "Pequeño Material", 
-            "Otros Gastos"
-        ])
+        partida = st.selectbox("Partida del presupuesto:", ["Material Eléctrico", "Mano de Obra Exterior", "Maquinaria", "Otros Gastos"])
         gastos = st.number_input("Gastos de esta partida (€):", min_value=0.0, step=0.01)
     
     comentarios = st.text_area("Comentarios:")
-    
-    # NOTA EXTRA: Subida de foto
     foto_albaran = st.file_uploader("Subir foto del albarán (Opcional)", type=["jpg", "png", "jpeg"])
     
-    boton_guardar = st.form_submit_button("Registrar Gasto")
+    if st.form_submit_button("Registrar Gasto"):
+        if n_albaran and trabajador:
+            st.session_state.datos_presupuesto.append({
+                "Albarán": n_albaran, "Fecha": fecha, "Trabajador": trabajador,
+                "Partida": partida, "Gasto (€)": gastos, "Comentarios": comentarios,
+                "Foto": "Subida" if foto_albaran else "No"
+            })
+            st.success("✅ Gasto registrado.")
 
-# --- LÓGICA DE GUARDADO ---
-if boton_guardar:
-    if n_albaran and trabajador:
-        nuevo_gasto = {
-            "Albarán": n_albaran,
-            "Fecha": fecha,
-            "Trabajador": trabajador,
-            "Partida": partida,
-            "Gasto (€)": gastos,
-            "Comentarios": comentarios,
-            "Foto": "Subida" if foto_albaran else "No"
-        }
-        st.session_state.datos_presupuesto.append(nuevo_gasto)
-        st.success("✅ Gasto registrado en la lista.")
-    else:
-        st.warning("⚠️ El número de albarán y el trabajador son obligatorios.")
-
-# --- MOSTRAR TABLA Y RESUMEN ---
+# --- TABLA Y ACCIONES ---
 if st.session_state.datos_presupuesto:
     df = pd.DataFrame(st.session_state.datos_presupuesto)
-    st.write("### Listado de Gastos")
     st.table(df)
-    
-    # Cálculo del total para impresionar a la profe
-    total = df["Gasto (€)"].sum()
-    st.metric("Total Gastado acumulado", f"{total} €")
+    st.metric("Total Gastado acumulado", f"{df['Gasto (€)'].sum()} €")
 
-    # Botón para descargar Excel
     output = BytesIO()
     with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-        df.to_excel(writer, index=False, sheet_name='Presupuesto')
+        df.to_excel(writer, index=False)
+    excel_data = output.getvalue()
     
-    st.download_button(
-        label="📥 Descargar Excel de Presupuesto",
-        data=output.getvalue(),
-        file_name=f"presupuesto_{date.today()}.xlsx",
-        mime="application/vnd.ms-excel"
-    )
+    c1, c2 = st.columns(2)
+    with c1:
+        st.download_button("📥 Descargar Excel", excel_data, f"presupuesto_{date.today()}.xlsx")
+    with c2:
+        if st.button("📧 Enviar Informe a Profesora"):
+            if enviar_correo(excel_data):
+                st.success("¡Email enviado con éxito!")
+            else:
+                st.error("Error al enviar. Revisa los Secrets.")
